@@ -1,49 +1,68 @@
-require('dotenv').config();
-const OpenAPI = require('@tinkoff/invest-openapi-js-sdk');
-const { DateTime } = require('luxon');
-const express = require('express');
-const fetch = require('node-fetch');
-const fs = require('fs');
+require("dotenv").config();
+const OpenAPI = require("@tinkoff/invest-openapi-js-sdk");
+const { DateTime } = require("luxon");
+const express = require("express");
+const fetch = require("node-fetch");
+const fs = require("fs");
 
-const apiURL = 'https://api-invest.tinkoff.ru/openapi/sandbox';
-const socketURL = 'wss://api-invest.tinkoff.ru/openapi/md/v1/md-openapi/ws';
+const apiURL = "https://api-invest.tinkoff.ru/openapi/sandbox";
+const socketURL = "wss://api-invest.tinkoff.ru/openapi/md/v1/md-openapi/ws";
 const secretToken = process.env.TINKOFF_SANDBOX_TOKEN;
 
 async function getPortfolio() {
+  process.stdout.write("fetching portfolio");
+
+  const file = __dirname + "/bt.portfolio_TImT.json";
+  if (fs.existsSync(file)) {
+    process.stdout.write(" done\n");
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  }
+
   async function login() {
-    const body = `email=${encodeURIComponent(process.env.BT_EMAIL)}&password=${encodeURIComponent(process.env.BT_PASSWORD)}&login=`;
-    const res = await fetch('https://blackterminal.ru/login', {
-      method: 'POST',
-      redirect: 'manual',
+    const body = `email=${encodeURIComponent(
+      process.env.BT_EMAIL
+    )}&password=${encodeURIComponent(process.env.BT_PASSWORD)}&login=`;
+    const res = await fetch("https://blackterminal.ru/login", {
+      method: "POST",
+      redirect: "manual",
       headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
+        "Content-Type": "application/x-www-form-urlencoded"
       },
-      body,
+      body
     });
 
-    const h = res.headers.raw()['set-cookie']
-      .map(r => /([^=;]+)=([^=;]+)/.exec(r))
+    const h = res.headers
+      .raw()
+      ["set-cookie"].map(r => /([^=;]+)=([^=;]+)/.exec(r))
       .reduce((acc, r) => {
-        acc[r[1].trim()] = r[2].trim()
-        return acc
-      }, {})
+        acc[r[1].trim()] = r[2].trim();
+        return acc;
+      }, {});
 
-    return h
+    return h;
   }
 
   async function get(cookies) {
-    const res = await fetch(`https://blackterminal.ru/tools/ajax-portfolio-export.php?id=${process.env.BT_PORTFOLIO_ID}&service=bt_json`, {
-      headers: {
-        Cookie: Object.entries(cookies)
-          .map(([k, v]) => `${k}=${v}`)
-          .join(';')
+    const res = await fetch(
+      `https://blackterminal.ru/tools/ajax-portfolio-export.php?id=${process.env.BT_PORTFOLIO_ID}&service=bt_json`,
+      {
+        headers: {
+          Cookie: Object.entries(cookies)
+            .map(([k, v]) => `${k}=${v}`)
+            .join(";")
+        }
       }
-    })
-    return await res.json()
+    );
+    return await res.json();
   }
 
   const cookies = await login();
-  return await get(cookies);
+  const result = await get(cookies);
+
+  fs.writeFileSync(file, JSON.stringify(result));
+  process.stdout.write(" done\n");
+
+  return result;
 }
 
 async function getCandles(api, ticker, from) {
@@ -53,22 +72,33 @@ async function getCandles(api, ticker, from) {
 
   while (from < now) {
     const to = DateTime.min(from.plus({ year: 1 }), now);
-    const cacheFile = __dirname + '/cache/' + ticker + '-' + from.toISODate() + '-' + to.toISODate();
+    const cacheFile =
+      __dirname +
+      "/cache/" +
+      ticker +
+      "-" +
+      from.toISODate() +
+      "-" +
+      to.toISODate();
     let candles;
 
+    process.stdout.write(`fetching ${ticker} ${from.toISO()} ${to.toISO()}`);
+
     if (fs.existsSync(cacheFile)) {
-      candles = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+      candles = JSON.parse(fs.readFileSync(cacheFile, "utf8"));
     } else {
       const res = await api.candlesGet({
         from: from.toISO(),
         to: to.toISO(),
         figi: (await api.searchOne({ ticker })).figi,
-        interval: 'day',
+        interval: "day"
       });
 
       candles = res.candles;
       fs.writeFileSync(cacheFile, JSON.stringify(candles));
     }
+
+    process.stdout.write(" done\n");
 
     resultCandles = resultCandles.concat(candles);
     from = to.plus({ days: 1 });
@@ -85,18 +115,22 @@ async function analyze() {
   const transactions = Object.values(portfolio.transactions)
     .map(t => ({
       ...t,
-      date: DateTime.fromISO(t.date),
+      price: t.price && Number(t.price),
+      fee: t.fee && Number(t.fee),
+      quantity: t.quantity && Number(t.quantity),
+      nominal: t.nominal && Number(t.nominal),
+      date: DateTime.fromFormat(t.date, "yyyy-MM-dd HH:mm:ss")
     }))
     .sort((a, b) => a.date - b.date);
   const allTickers = transactions.reduce((acc, t) => {
-    if (t.ticker && t.ticker !== 'MONEY' && !acc.includes(t.ticker)) {
+    if (t.ticker && t.ticker !== "MONEY" && !acc.includes(t.ticker)) {
       acc.push(t.ticker);
     }
     return acc;
   }, []);
   const api = new OpenAPI({ apiURL, secretToken, socketURL });
 
-  let date = DateTime.fromISO('2019-01-01T23:00:00+03:00');
+  let date = DateTime.fromISO("2019-01-01T23:00:00+03:00");
   // let date = DateTime.local();
 
   while (date <= DateTime.local()) {
@@ -109,50 +143,61 @@ async function analyze() {
           return t.date <= date;
         });
 
-      const tickerCandles = history.length > 0
-        ? await getCandles(api, ticker.replace(/:.+$/, ''), history[0].date)
-        : [];
+      const tickerCandles =
+        history.length > 0
+          ? await getCandles(api, ticker.replace(/:.+$/, ""), history[0].date)
+          : [];
 
-      const lastCandle = tickerCandles.reverse().find(c => DateTime.fromISO(c.time) <= date);
+      const lastCandle = tickerCandles
+        .reverse()
+        .find(c => DateTime.fromISO(c.time) <= date);
       const currentPrice = lastCandle ? lastCandle.c : 0;
 
-      const res = history
-        .reduce((acc, t) => {
+      const res = history.reduce(
+        (acc, t) => {
           acc.transactions += 1;
-          if (t.operation === 'BUY' && t.type === 'S') {
+          if (t.operation === "BUY" && t.type === "S") {
             acc.quantity += t.quantity;
             acc.spent += t.price * t.quantity;
             acc.fees += t.fee;
-          } else if (t.operation === 'BUY' && t.type === 'B') {
+          } else if (t.operation === "BUY" && t.type === "B") {
             acc.quantity += t.quantity;
-            acc.spent += t.price / 100 * t.nominal * t.quantity;
+            acc.spent += (t.price / 100) * t.nominal * t.quantity;
             acc.fees += t.fee;
-          } else if (t.operation === 'SELL' && t.type === 'S') {
+          } else if (t.operation === "SELL" && t.type === "S") {
             acc.quantity -= t.quantity;
             acc.got += t.price * t.quantity;
             acc.fees += t.fee;
-          } else if (t.operation === 'BUY' && t.type === 'D') {
+          } else if (t.operation === "BUY" && t.type === "D") {
             acc.divs += t.price;
           } else {
             throw new Error();
           }
           return acc;
-        }, {
+        },
+        {
           transactions: 0,
           quantity: 0,
           spent: 0,
           got: 0,
           divs: 0,
-          fees: 0,
-        });
+          fees: 0
+        }
+      );
 
       res.currentPrice = currentPrice;
 
       if (history.length > 0) {
-        if (history[0].currency === 'RUB') {
-        } else if (history[0].currency === 'USD') {
-          const usdCandles = await getCandles(api, 'USD000UTSTOM', transactions[0].date);
-          const lastUsdCandle = usdCandles.reverse().find(c => DateTime.fromISO(c.time) <= date);
+        if (history[0].currency === "RUB") {
+        } else if (history[0].currency === "USD") {
+          const usdCandles = await getCandles(
+            api,
+            "USD000UTSTOM",
+            transactions[0].date
+          );
+          const lastUsdCandle = usdCandles
+            .reverse()
+            .find(c => DateTime.fromISO(c.time) <= date);
           const currentUsdPrice = lastUsdCandle ? lastUsdCandle.c : 0;
           res.spent *= currentUsdPrice;
           res.got *= currentUsdPrice;
@@ -175,22 +220,25 @@ async function analyze() {
 
     result.push({
       date,
-      dayData,
+      dayData
     });
 
     date = date.plus({ days: 1 });
-    // break
   }
+
+  console.log("done");
 }
 
-analyze()
-  .catch(console.error);
+analyze().catch(err => {
+  console.error(err);
+  console.log(err.stack);
+});
 
 const app = express();
 
-app.use(express.static(__dirname + '/assets'));
+app.use(express.static(__dirname + "/assets"));
 
-app.get('/api/get-data', async (req, res) => {
+app.get("/api/get-data", async (req, res) => {
   res.json(result);
 });
 
